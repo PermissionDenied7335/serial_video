@@ -21,7 +21,8 @@ const struct option longopts[]
     {"help", no_argument, NULL, 'h'},
     {"input-media", required_argument, NULL, 'i'},
     {"output-device", required_argument, NULL, 'o'},
-    {"baudrate", required_argument, NULL, 'b'}
+    {"baudrate", required_argument, NULL, 'b'},
+	{"audio-fft-threshold", required_argument, NULL, 'a'}
 };
 
 void usage(const char *progname)
@@ -29,17 +30,18 @@ void usage(const char *progname)
     std::cout << "Usage: " << progname << " [OPTION]..." << std::endl;
     std::cout << "Options:" << std::endl;
     std::cout << "\t-h, --help\t\t\t\t\tdisplay this help" << std::endl;
-    std::cout << "\t-i, --input-media=path/to/your/media/file\tspecify your input media" << std::endl;
-    std::cout << "\t-o, --output-device=path/to/serial/port\t\tspecify your serial port to transmit video" << std::endl;
+    std::cout << "\t-i, --input-media=path/to/your/media/file\tyour input media" << std::endl;
+    std::cout << "\t-o, --output-device=path/to/serial/port\t\tyour serial port to transmit video" << std::endl;
     std::cout << "\t-b, --baudrate=BAUDRATE\t\t\t\tbaud rate in bps (e.g. 115200 2000000)" << std::endl;
+	std::cout << "\t-a, --audio-fft-threshold\t\t\tthe lowest power in fft power spectrum for playback" << std::endl;
 }
 
 int main(int argc, char **argv)
 {
-    int optc, baudrate = -1, parse_failed = 0;
+    int optc, baudrate = -1, parse_failed = 0, audio_threshold = -1;
     const char *progname = basename(argv[0]);
-    char *input_media = NULL, *output_device = NULL, *baudrate_str = NULL;
-    while ((optc = getopt_long(argc, argv, "hi:o:b:", longopts, NULL)) != -1) //获取命令行参数
+    char *input_media = NULL, *output_device = NULL, *baudrate_str = NULL, *audio_threshold_str = NULL;
+    while ((optc = getopt_long(argc, argv, "hi:o:b:a:", longopts, NULL)) != -1) //获取命令行参数
     {
         switch(optc)
         {
@@ -57,6 +59,10 @@ int main(int argc, char **argv)
                 baudrate_str = optarg;
                 baudrate = atoi(baudrate_str);
                 break;
+			case 'a': //音频功率谱阈值
+				audio_threshold_str = optarg;
+				audio_threshold = atoi(audio_threshold_str);
+				break;
             default:
                 parse_failed = 1;
         }
@@ -71,6 +77,8 @@ int main(int argc, char **argv)
             std::cerr << "Output device not given" << std::endl;
         if (baudrate <= 0)
             std::cerr << "Invalid baudrate" << std::endl;
+		if (audio_threshold < 0)
+			std::cerr << "Invalid audio threshold" << std::endl;
         std::cerr << "Try " << progname << " --help for more information." << std::endl;
         exit(EXIT_FAILURE);
     }
@@ -91,7 +99,7 @@ int main(int argc, char **argv)
         avdecoder av(input_media);
         av.open();
         gray2bw gray(av.get_video_width(), av.get_video_height(), 128, 64);
-        fft freq(av.get_audio_samplerate(), av.get_video_framerate(), 100); //还没有条件测试这个阈值
+        fft freq(av.get_audio_samplerate(), av.get_video_framerate(), audio_threshold); //现在可以在命令行测试这个阈值
         transfer trans(output_device, baudrate, av.get_video_framerate(), 1024, 1);
         std::thread dec_t(&avdecoder::streamed_decode, &av, std::ref(av_video), std::ref(av_video_lock), std::ref(av_audio), std::ref(av_audio_lock), std::ref(decode_done));
         std::thread gray_t(&gray2bw::streamed_convert, &gray, std::ref(av_video), std::ref(av_video_lock), std::ref(gray_video), std::ref(gray_video_lock), std::ref(decode_done), std::ref(gray_done));
