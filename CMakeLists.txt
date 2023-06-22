@@ -14,7 +14,7 @@ set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
 
 add_subdirectory(src)
 
-add_executable(sv ${PROJECT_SOURCE_DIR}/serial_video/main.cpp)
+add_executable(vons ${PROJECT_SOURCE_DIR}/serial_video/main.cpp)
 target_include_directories(sv PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(sv PRIVATE avdecoder gray2bw fft transfer)
 
