@@ -6,6 +6,7 @@
 #include <queue>
 #include <mutex>
 #include <atomic>
+#include <cstdint>
 
 #define FFT_QUEUE_LENGTH_MAX 10240 // 队列长度最大10KiB
 
@@ -21,7 +22,7 @@ public:
     void streamed_calculate(std::queue<uint16_t> &input, std::mutex &input_lock, std::queue<uint8_t> &output, std::mutex &output_lock, std::atomic<int> &abort_flag, std::atomic<int> &process_done);
 
 private:
-    int input_samplerate, output_samplerate;
+    uint32_t input_samplerate, output_samplerate;
     double threshold;
 };
 

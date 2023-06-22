@@ -2,6 +2,104 @@
 #include <thread>
 #include <chrono>
 
+
+/**
+ * @brief 傅里叶变换数据处理上下文
+ * 
+ */
+class fft_calc_ctx
+{
+public:
+
+    /**
+     * @brief Construct a new fft calc ctx object
+     * 
+     * @param array_length 计算时的数据长度
+     */
+    fft_calc_ctx(uint32_t array_length)
+    {
+        this->array_length  = array_length;
+        this->input_array   = (double *)fftw_malloc(array_length * sizeof(double));                                     // 实输入数据
+        this->output_array  = (fftw_complex *)fftw_malloc(array_length * sizeof(fftw_complex));                         // 复输出数据
+        this->plan          = fftw_plan_dft_r2c_1d(array_length, this->input_array, this->output_array, FFTW_MEASURE);  // 创建傅立叶变换计划
+    }
+
+    /**
+     * @brief Destroy the fft_calc_ctx object
+     * 
+     */
+    ~fft_calc_ctx()
+    {
+        if (this->plan != NULL)
+            fftw_destroy_plan(this->plan);
+
+        if (this->input_array != NULL)
+            fftw_free(input_array);
+
+        if (this->output_array != NULL)
+            fftw_free(output_array);
+    }
+
+    /**
+     * @brief 加载输入数据
+     * 
+     * @param input PCM输入队列
+     */
+    void feed_input_array(std::queue<uint16_t> &input)
+    {
+        for (int i = 0; i < this->array_length; i++)
+        {
+            input_array[i] = input.front();
+            input.pop();
+        }
+    }
+
+    /**
+     * @brief 执行傅里叶变换
+     * 
+     */
+    void calc(void)
+    {
+        fftw_execute(this->plan);
+    }
+
+    /**
+     * @brief 输出f0（实际频率除以16后的数据）（未来将改为输出音阶）
+     * 
+     * @param output 输出队列
+     * @param input_samplerate 输入源的采样率，用于计算实际频率
+     * @param threshold 功率阈值，超过该阈值才输出（未来将改为置信度）
+     */
+    void get_f0(std::queue<uint8_t> &output, uint32_t input_samplerate, double threshold)
+    {
+        int maxp = 0;
+        double maxn = 0;
+        for (int i = 1; i < this->array_length; i++) // 从1开始，去除直流分量
+        {
+            double current = sqrt(this->output_array[i][0] * this->output_array[i][0] + this->output_array[i][1] * this->output_array[i][1]); // 计算功率
+            if (current > maxn && current > threshold)
+            {
+                maxn = current;
+                maxp = i;
+            }
+        }
+        int freq = 0;
+        if (maxp > 0)
+            freq = (maxp - 1) * input_samplerate / this->array_length; // 计算频率
+        freq >>= 4;                                              // 除以16以匹配uint8_t的输出格式
+        if (freq > 255)                                          // 剔除超过范围的结果
+            output.push(0);
+        else
+            output.push(freq);
+    }
+
+private:
+    uint32_t array_length;
+    double *input_array = NULL;
+    fftw_complex *output_array = NULL;
+    fftw_plan plan = NULL;
+};
+
 /**
  * @brief Construct a new fft::fft object
  *
@@ -40,10 +138,9 @@ fft::fft(int input_samplerate, int output_samplerate, double threshold)
  */
 void fft::calculate(std::queue<uint16_t> &input, std::queue<uint8_t> &output)
 {
-    int length = input_samplerate / output_samplerate;                                       // 缓冲区长度
-    double *input_array = (double *)fftw_malloc(length * sizeof(double));                    // 实输入数据
-    fftw_complex *output_array = (fftw_complex *)fftw_malloc(length * sizeof(fftw_complex)); // 复输出数据
-    fftw_plan p = fftw_plan_dft_r2c_1d(length, input_array, output_array, FFTW_MEASURE);     // 创建傅立叶变换计划
+    uint32_t length = input_samplerate / output_samplerate; // 缓冲区长度
+    fft_calc_ctx ctx(length); // 创建计算上下文
+
     while (!input.empty())
     {
         if (input.size() < length) // 当队列长度小于缓冲区
@@ -54,36 +151,10 @@ void fft::calculate(std::queue<uint16_t> &input, std::queue<uint8_t> &output)
             }
             break;
         }
-        for (int i = 0; i < length; i++) // 加载数据
-        {
-            input_array[i] = input.front();
-            input.pop();
-        }
-        fftw_execute(p); // 执行变换
-        int maxp = 0;
-        double maxn = 0;
-        for (int i = 1; i < length; i++) // 从1开始，去除直流分量
-        {
-            double current = sqrt(output_array[i][0] * output_array[i][0] + output_array[i][1] * output_array[i][1]); // 计算功率
-            if (current > maxn && current > this->threshold)
-            {
-                maxn = current;
-                maxp = i;
-            }
-        }
-        int freq = 0;
-        if (maxp > 0)
-            freq = (maxp - 1) * this->input_samplerate / length; // 计算频率
-        freq >>= 4;                                              // 除以16以匹配uint8_t的输出格式
-        if (freq > 255)                                          // 剔除超过范围的结果
-            output.push(0);
-        else
-            output.push(freq);
+        ctx.feed_input_array(input);
+        ctx.calc(); // 执行变换
+        ctx.get_f0(output, input_samplerate, this->threshold);
     }
-    // 清理
-    fftw_destroy_plan(p);
-    fftw_free(input_array);
-    fftw_free(output_array);
 }
 
 /**
@@ -98,10 +169,9 @@ void fft::calculate(std::queue<uint16_t> &input, std::queue<uint8_t> &output)
  */
 void fft::streamed_calculate(std::queue<uint16_t> &input, std::mutex &input_lock, std::queue<uint8_t> &output, std::mutex &output_lock, std::atomic<int> &abort_flag, std::atomic<int> &process_done)
 {
-    int length = input_samplerate / output_samplerate;                                       // 缓冲区长度
-    double *input_array = (double *)fftw_malloc(length * sizeof(double));                    // 实输入数据
-    fftw_complex *output_array = (fftw_complex *)fftw_malloc(length * sizeof(fftw_complex)); // 复输出数据
-    fftw_plan p = fftw_plan_dft_r2c_1d(length, input_array, output_array, FFTW_MEASURE);     // 创建傅立叶变换计划
+    uint32_t length = input_samplerate / output_samplerate; // 缓冲区长度
+    fft_calc_ctx ctx(length); // 创建计算上下文
+
     while (1)
     {
         while (1)
@@ -114,52 +184,29 @@ void fft::streamed_calculate(std::queue<uint16_t> &input, std::mutex &input_lock
                     input.pop(); // 丢弃所有数据
                 }
                 input_lock.unlock(); // 输入解锁
-                goto done;               // 退出处理循环
+                process_done = 1; // 运行完成
+                return;
             }
             if (input.size() >= length)
                 break;
             input_lock.unlock();                                       // 输入解锁
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        for (int i = 0; i < length; i++)
-        {
-            input_array[i] = input.front();
-            input.pop();
-        }
+        ctx.feed_input_array(input);
         input_lock.unlock(); // 输入解锁
-        fftw_execute(p);     // 执行变换
-        int maxp = 0;
-        double maxn = 0;
-        for (int i = 1; i < length; i++) // 去除直流分量
-        {
-            double current = sqrt(output_array[i][0] * output_array[i][0] + output_array[i][1] * output_array[i][1]); // 计算功率
-            if (current > maxn && current > this->threshold)
-            {
-                maxn = current;
-                maxp = i;
-            }
-        }
-        int freq = 0;
-        if (maxp > 0)
-            freq = (maxp - 1) * this->input_samplerate / length; // 计算频率
-        freq >>= 4;                                              // 除以16以匹配uint8_t的输出格式
+
+        ctx.calc(); // 执行变换
+
         while (1)
         {
             output_lock.lock();
             if (output.size() < FFT_QUEUE_LENGTH_MAX) // 如果有足够空间输出
                 break;
             output_lock.unlock();
-            std::this_thread::sleep_for(std::chrono::microseconds(1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        if (freq > 255) // 剔除超过范围的结果
-            output.push(0);
-        else
-            output.push(freq);
+        ctx.get_f0(output, this->input_samplerate, this->threshold);
         output_lock.unlock(); // 输出解锁
     }
-    // 清理
-    done:fftw_destroy_plan(p);
-    fftw_free(input_array);
-    fftw_free(output_array);
     process_done = 1;
 }
