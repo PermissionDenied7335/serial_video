@@ -6,10 +6,10 @@
 #include <getopt.h>
 #include <unistd.h>
 
-#include "avdecoder.hpp"
-#include "gray2bw.hpp"
-#include "fft.hpp"
-#include "transfer.hpp"
+#include "serial_video/avdecoder.hpp"
+#include "serial_video/gray2bw.hpp"
+#include "serial_video/fft.hpp"
+#include "serial_video/transfer.hpp"
 
 std::queue<uint8_t> av_video, gray_video, fft_audio;
 std::queue<uint16_t> av_audio;

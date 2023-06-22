@@ -1,4 +1,4 @@
-#include "gray2bw.hpp"
+#include "serial_video/gray2bw.hpp"
 #include <thread>
 #include <chrono>
 

@@ -14,6 +14,6 @@ sudo apt install libavdevices-dev libavutil-dev libavcodec-dev libopencv-dev lib
 mkdir build
 cd build
 cmake ..
-make
+make -j$(nproc)
 ```
-如果没有出错，那么您将在build目录下看到libavdecoder.so，libfft.so，libgray2bw.so和libtransfer.so四个动态库和名为main的可执行文件，接下来您可以执行主程序了。
+如果没有出错，那么您将在build目录下看到名为sv的可执行文件，接下来您可以执行主程序了。
