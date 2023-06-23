@@ -6,6 +6,139 @@
 #include <unistd.h>
 #include <fstream> //for std::ios_base::failure
 
+enum transfer_error_code
+{
+    NOTHING = 0, // 无误
+    OPEN_FAILED, // 无法打开串口
+    GET_ATTR_FAILED, // 无法获取串口配置
+    SET_ATTR_FAILED, // 无法设置串口配置
+    BUFF_ALLOC_FAILED // 无法分配缓冲区
+};
+
+class transfer_ctx
+{
+public:
+    /**
+     * @brief Construct a new transfer ctx object
+     * 
+     * @param device_path 串口文件地址
+     * @param baudrate 波特率
+     * @param video_frame_size 视频帧大小
+     * @param audio_frame_size 音频帧大小
+     */
+    transfer_ctx(std::string device_path, speed_t baudrate, size_t video_frame_size, size_t audio_frame_size)
+    {
+        this->serial_fd = open(device_path.c_str(), O_RDWR | O_NOCTTY);
+        this->framebuffer = new char[video_frame_size + audio_frame_size];
+        this->video_frame_size = video_frame_size;
+        this->audio_frame_size = audio_frame_size;
+
+        if (this->framebuffer == NULL)
+        {
+            this->status = BUFF_ALLOC_FAILED;
+            return;
+        }
+
+        struct termios serial_cfg;
+        if (this->serial_fd < 0)
+        {
+            this->status = OPEN_FAILED;
+            return;
+        }
+        if (tcgetattr(serial_fd, &serial_cfg) == -1)
+        {
+            this->status = GET_ATTR_FAILED;
+            return;
+        }
+        
+        cfmakeraw(&serial_cfg);
+        cfsetspeed(&serial_cfg, baudrate);
+        serial_cfg.c_cflag |= CLOCAL;  // 本地模式，忽略控制线
+        serial_cfg.c_cflag &= ~CREAD;  // 禁用读取
+        serial_cfg.c_cflag &= ~CSTOPB; // 一位停止位
+        serial_cfg.c_cflag &= ~CSIZE;  // 清除数据位设置
+        serial_cfg.c_cflag |= CS8;     // 8位数据
+        serial_cfg.c_cflag &= ~PARENB; // 无校验
+
+        tcflush(serial_fd, TCIOFLUSH);
+        serial_cfg.c_cc[VTIME] = 0;
+        serial_cfg.c_cc[VMIN] = 0; // 非阻塞读取（其实无所谓了，反正不读取）
+        tcflush(serial_fd, TCIOFLUSH);
+
+        if (tcsetattr(serial_fd, TCSANOW, &serial_cfg) == -1)
+        {
+            this->status = SET_ATTR_FAILED;
+            return;
+        }
+    }
+
+    /**
+     * @brief Destroy the transfer ctx object
+     * 
+     */
+    ~transfer_ctx()
+    {
+        if (this->serial_fd >= 0)
+            close(this->serial_fd);
+        
+        if (this->framebuffer != NULL)
+            delete[] this->framebuffer;
+    }
+
+    /**
+     * @brief 获取错误码
+     * 
+     * @return transfer_error_code 错误码，详见transfer_error_code枚举
+     */
+    transfer_error_code get_status(void)
+    {
+        return this->status;
+    }
+
+    /**
+     * @brief 加载视频缓冲区
+     * 
+     * @param video 视频数据队列
+     */
+    void feed_video_buffer(std::queue<uint8_t> &video)
+    {
+        for (size_t i = 0; i < this->video_frame_size; i++) // 读取一帧视频到缓冲区
+        {
+            this->framebuffer[i] = video.front();
+            video.pop();
+        }
+    }
+
+    /**
+     * @brief 加载音频缓冲区
+     * 
+     * @param video 音频数据队列
+     */
+    void feed_audio_buffer(std::queue<uint8_t> &audio)
+    {
+        for (size_t i = this->video_frame_size; i < this->video_frame_size + this->audio_frame_size; i++) // 读取一帧音频到缓冲区
+        {
+            this->framebuffer[i] = audio.front();
+            audio.pop();
+        }
+    }
+
+    /**
+     * @brief 发送缓冲区
+     * 
+     */
+    void send(void)
+    {
+        write(this->serial_fd, this->framebuffer, this->video_frame_size + this->audio_frame_size); // 向串口写入
+    }
+
+private:
+    int serial_fd = -1;
+    transfer_error_code status = NOTHING;
+    char *framebuffer = NULL;
+    size_t video_frame_size, audio_frame_size;
+};
+
 /**
  * @brief Construct a new transfer::transfer object
  *
@@ -118,6 +251,7 @@ transfer::transfer(const char *device, int baudrate, int framerate, int frame_si
     }
 }
 
+
 /**
  * @brief 启动传输
  *
@@ -126,43 +260,37 @@ transfer::transfer(const char *device, int baudrate, int framerate, int frame_si
  */
 void transfer::start(std::queue<uint8_t> &video, std::queue<uint8_t> &audio)
 {
-    struct termios serial_cfg;
-
-    int fd = open(device_path.c_str(), O_RDWR | O_NOCTTY);
-    if (fd < 0)
+    transfer_ctx ctx(this->device_path, this->baudrate, this->frame_size, this->audio_size);
+    switch (ctx.get_status()) // 检查串口是否已正确配置
     {
-        std::ios_base::failure ex("Unable to open serial port!");
-        throw ex;
+        case NOTHING:
+            break;
+        case OPEN_FAILED:
+        {
+            std::ios_base::failure ex("Unable to open serial port!");
+            throw ex;
+        }
+        case GET_ATTR_FAILED:
+        {
+            std::ios_base::failure ex("Unable to get serial configuration!");
+            throw ex;
+        }
+        case SET_ATTR_FAILED:
+        {
+            std::ios_base::failure ex("Unable to apply serial configuration");
+            throw ex;
+        }
+        case BUFF_ALLOC_FAILED:
+        {
+            std::ios_base::failure ex("Unable to allocate buffer!");
+            throw ex;
+        }
+        default:
+        {
+            std::ios_base::failure ex("Unknown failure!");
+            throw ex;
+        }
     }
-
-    if (tcgetattr(fd, &serial_cfg) == -1)
-    {
-        std::ios_base::failure ex("Unable to get serial configuration!");
-        close(fd);
-        throw ex;
-    }
-
-    cfmakeraw(&serial_cfg);
-    cfsetspeed(&serial_cfg, this->baudrate);
-    serial_cfg.c_cflag |= CLOCAL;  // 本地模式，忽略控制线
-    serial_cfg.c_cflag &= ~CREAD;  // 禁用读取
-    serial_cfg.c_cflag &= ~CSTOPB; // 一位停止位
-    serial_cfg.c_cflag &= ~CSIZE;  // 清除数据位设置
-    serial_cfg.c_cflag |= CS8;     // 8位数据
-    serial_cfg.c_cflag &= ~PARENB; // 无校验
-
-    tcflush(fd, TCIOFLUSH);
-    serial_cfg.c_cc[VTIME] = 0;
-    serial_cfg.c_cc[VMIN] = 0; // 非阻塞读取（其实无所谓了，反正不读取）
-    tcflush(fd, TCIOFLUSH);
-
-    if (tcsetattr(fd, TCSANOW, &serial_cfg) == -1)
-    {
-        std::ios_base::failure ex("Unable to apply serial configuration");
-        close(fd);
-        throw ex;
-    }
-    char *buffer = new char[this->frame_size + this->audio_size];
     while (!video.empty() || !audio.empty())
     {
         auto wakeup_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000 / this->framerate);
@@ -178,21 +306,11 @@ void transfer::start(std::queue<uint8_t> &video, std::queue<uint8_t> &audio)
             }
             break;
         }
-        for (int i = 0; i < this->frame_size; i++) // 读取一帧视频到缓冲区
-        {
-            buffer[i] = video.front();
-            video.pop();
-        }
-        for (int i = 0; i < this->audio_size; i++) // 读取一帧音频到缓冲区
-        {
-            buffer[this->frame_size + i] = audio.front();
-            audio.pop();
-        }
-        write(fd, buffer, this->frame_size + this->audio_size); // 向串口写入
+        ctx.feed_video_buffer(video);
+        ctx.feed_audio_buffer(audio);
+        ctx.send();
         std::this_thread::sleep_until(wakeup_time);             // 一小段休眠，以保证帧率准确
     }
-    delete[] buffer;
-    close(fd);
 }
 
 /**
@@ -206,43 +324,38 @@ void transfer::start(std::queue<uint8_t> &video, std::queue<uint8_t> &audio)
  */
 void transfer::streamed_start(std::queue<uint8_t> &video, std::mutex &vlock, std::queue<uint8_t> &audio, std::mutex &alock, std::atomic<int> &video_abort_flag, std::atomic<int> &audio_abort_flag)
 {
-    struct termios serial_cfg;
-
-    int fd = open(device_path.c_str(), O_RDWR | O_NOCTTY);
-    if (fd < 0)
+    transfer_ctx ctx(this->device_path, this->baudrate, this->frame_size, this->audio_size);
+    switch (ctx.get_status()) // 检查串口是否已正确配置
     {
-        std::ios_base::failure ex("Unable to open serial port!");
-        throw ex;
+        case NOTHING:
+            break;
+        case OPEN_FAILED:
+        {
+            std::ios_base::failure ex("Unable to open serial port!");
+            throw ex;
+        }
+        case GET_ATTR_FAILED:
+        {
+            std::ios_base::failure ex("Unable to get serial configuration!");
+            throw ex;
+        }
+        case SET_ATTR_FAILED:
+        {
+            std::ios_base::failure ex("Unable to apply serial configuration");
+            throw ex;
+        }
+        case BUFF_ALLOC_FAILED:
+        {
+            std::ios_base::failure ex("Unable to allocate buffer!");
+            throw ex;
+        }
+        default:
+        {
+            std::ios_base::failure ex("Unknown failure!");
+            throw ex;
+        }
     }
 
-    if (tcgetattr(fd, &serial_cfg) == -1)
-    {
-        std::ios_base::failure ex("Unable to get serial configuration!");
-        close(fd);
-        throw ex;
-    }
-
-    cfmakeraw(&serial_cfg);
-    cfsetspeed(&serial_cfg, this->baudrate);
-    serial_cfg.c_cflag |= CLOCAL;  // 本地模式，忽略控制线
-    serial_cfg.c_cflag &= ~CREAD;  // 禁用读取
-    serial_cfg.c_cflag &= ~CSTOPB; // 一位停止位
-    serial_cfg.c_cflag &= ~CSIZE;  // 清除数据位设置
-    serial_cfg.c_cflag |= CS8;     // 8位数据
-    serial_cfg.c_cflag &= ~PARENB; // 无校验
-
-    tcflush(fd, TCIOFLUSH);
-    serial_cfg.c_cc[VTIME] = 0;
-    serial_cfg.c_cc[VMIN] = 0; // 非阻塞读取（其实无所谓了，反正不读取）
-    tcflush(fd, TCIOFLUSH);
-
-    if (tcsetattr(fd, TCSANOW, &serial_cfg) == -1)
-    {
-        std::ios_base::failure ex("Unable to apply serial configuration");
-        close(fd);
-        throw ex;
-    }
-    char *buffer = new char[this->frame_size + this->audio_size];
     while (1)
     {
         auto wakeup_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000 / this->framerate);
@@ -253,6 +366,7 @@ void transfer::streamed_start(std::queue<uint8_t> &video, std::mutex &vlock, std
         alock.lock();
         asize = audio.size();
         alock.unlock();
+
         if ((video_abort_flag > 0 && vsize < this->frame_size) || (audio_abort_flag > 0 && asize < this->audio_size)) // 已终止，且剩余数据已不足以组成一个数据包
         {
             while (video_abort_flag == 0)
@@ -290,6 +404,7 @@ void transfer::streamed_start(std::queue<uint8_t> &video, std::mutex &vlock, std
             alock.unlock();
             break;
         }
+
         while (vsize < this->frame_size || asize < this->audio_size) // 等待直至队列长度足够
         {
             vlock.lock();
@@ -300,23 +415,14 @@ void transfer::streamed_start(std::queue<uint8_t> &video, std::mutex &vlock, std
             alock.unlock();
             std::this_thread::sleep_for(std::chrono::microseconds(100)); // 每0.1毫秒读取一次队列长度
         }
+
         vlock.lock(); // 视频加锁
-        for (int i = 0; i < this->frame_size; i++)
-        {
-            buffer[i] = video.front(); // 读入缓冲区
-            video.pop();
-        }
-        vlock.unlock(); // 视频解锁
+        ctx.feed_video_buffer(video);
+        vlock.unlock(); //视频解锁
         alock.lock();   // 音频加锁
-        for (int i = 0; i < this->audio_size; i++)
-        {
-            buffer[this->frame_size + i] = audio.front(); // 读入缓冲区
-            audio.pop();
-        }
-        alock.unlock();                                         // 音频解锁
-        write(fd, buffer, this->frame_size + this->audio_size); // 写入串口
-        std::this_thread::sleep_until(wakeup_time);             // 休眠以保证帧率准确
+        ctx.feed_audio_buffer(audio);
+        alock.unlock(); // 音频解锁
+        ctx.send(); // 写入串口
+        std::this_thread::sleep_until(wakeup_time); // 休眠以保证帧率准确
     }
-    delete[] buffer;
-    close(fd);
 }
