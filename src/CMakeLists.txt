@@ -31,9 +31,9 @@ endif()
 find_package(OpenCV REQUIRED)
 if(OpenCV_FOUND)
 
-    #target_link_libraries(gray2bw PRIVATE ${OpenCV_LIBS})
-    target_link_libraries(gray2bw PUBLIC ${OpenCV_LIBS})
-    #target_include_directories(gray2bw PRIVATE ${OpenCV_INCLUDE_DIRS})
-    target_include_directories(gray2bw PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(gray2bw PRIVATE ${OpenCV_LIBS})
+    #target_link_libraries(gray2bw PUBLIC ${OpenCV_LIBS})
+    target_include_directories(gray2bw PRIVATE ${OpenCV_INCLUDE_DIRS})
+    #target_include_directories(gray2bw PUBLIC ${OpenCV_INCLUDE_DIRS})
 
 endif()

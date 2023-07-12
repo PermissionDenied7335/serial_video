@@ -1,7 +1,6 @@
 #ifndef __GRAY2BW_HPP__
 #define __GRAY2BW_HPP__
 
-#include <opencv2/opencv.hpp>
 #include <cstdint>
 #include <mutex>
 #include <queue>
@@ -20,7 +19,6 @@ public:
     void streamed_convert(std::queue<uint8_t> &in_stream, std::mutex &in_lock, std::queue<uint8_t> &out_stream, std::mutex &out_lock, std::atomic<int> &abort_flag, std::atomic<int> &process_done);
 
 private:
-    cv::Mat in_frame, out_frame;
     int m_in_width, m_in_height, m_out_width, m_out_height;
 };
 
